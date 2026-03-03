@@ -6,7 +6,8 @@ import { getFeishuRuntime } from "./runtime.js";
 // Feishu emoji types for typing indicator
 // See: https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce
 // Full list: https://github.com/go-lark/lark/blob/main/emoji.go
-const TYPING_EMOJI = "Typing"; // Typing indicator emoji
+const TYPING_EMOJI = "OneSecond"; // Typing indicator emoji (shown while processing)
+const DONE_EMOJI = "DONE"; // Completion indicator emoji (shown after reply finishes)
 
 /**
  * Feishu API error codes that indicate the caller should back off.
@@ -205,6 +206,48 @@ export async function removeTypingIndicator(params: {
     // Silently fail for other non-critical errors
     if (getFeishuRuntime().logging.shouldLogVerbose()) {
       runtime?.log?.(`[feishu] failed to remove typing indicator: ${String(err)}`);
+    }
+  }
+}
+
+/**
+ * Add a DONE reaction to a message after reply completes.
+ *
+ * Unlike the typing indicator, this reaction is not tracked for removal —
+ * it persists as a visual "completed" marker.
+ */
+export async function addDoneIndicator(params: {
+  cfg: ClawdbotConfig;
+  messageId: string;
+  accountId?: string;
+  runtime?: RuntimeEnv;
+}): Promise<void> {
+  const { cfg, messageId, accountId, runtime } = params;
+  const account = resolveFeishuAccount({ cfg, accountId });
+  if (!account.configured) {
+    return;
+  }
+
+  const client = createFeishuClient(account);
+
+  try {
+    const response = await client.im.messageReaction.create({
+      path: { message_id: messageId },
+      data: {
+        reaction_type: { emoji_type: DONE_EMOJI },
+      },
+    });
+
+    const backoffCode = getBackoffCodeFromResponse(response);
+    if (backoffCode !== undefined) {
+      if (getFeishuRuntime().logging.shouldLogVerbose()) {
+        runtime?.log?.(`[feishu] done indicator response contains backoff code ${backoffCode}`);
+      }
+      // Don't throw — done indicator is best-effort, no keepalive to trip
+    }
+  } catch (err) {
+    if (getFeishuRuntime().logging.shouldLogVerbose()) {
+      runtime?.log?.(`[feishu] failed to add done indicator: ${String(err)}`);
     }
   }
 }

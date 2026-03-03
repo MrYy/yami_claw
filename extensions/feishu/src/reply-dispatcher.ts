@@ -15,7 +15,12 @@ import { getFeishuRuntime } from "./runtime.js";
 import { sendMarkdownCardFeishu, sendMessageFeishu } from "./send.js";
 import { FeishuStreamingSession } from "./streaming-card.js";
 import { resolveReceiveIdType } from "./targets.js";
-import { addTypingIndicator, removeTypingIndicator, type TypingIndicatorState } from "./typing.js";
+import {
+  addDoneIndicator,
+  addTypingIndicator,
+  removeTypingIndicator,
+  type TypingIndicatorState,
+} from "./typing.js";
 
 /** Detect if text contains markdown elements that benefit from card rendering */
 function shouldUseCard(text: string): boolean {
@@ -111,8 +116,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
       if (!typingState) {
         return;
       }
+      const messageId = typingState.messageId;
       await removeTypingIndicator({ cfg, state: typingState, accountId, runtime: params.runtime });
       typingState = null;
+      // Add DONE reaction after removing the typing indicator
+      await addDoneIndicator({ cfg, messageId, accountId, runtime: params.runtime });
     },
     onStartError: (err) =>
       logTypingFailure({

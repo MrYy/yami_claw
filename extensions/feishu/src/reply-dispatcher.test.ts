@@ -8,8 +8,11 @@ const sendMediaFeishuMock = vi.hoisted(() => vi.fn());
 const createFeishuClientMock = vi.hoisted(() => vi.fn());
 const resolveReceiveIdTypeMock = vi.hoisted(() => vi.fn());
 const createReplyDispatcherWithTypingMock = vi.hoisted(() => vi.fn());
-const addTypingIndicatorMock = vi.hoisted(() => vi.fn(async () => ({ messageId: "om_msg" })));
+const addTypingIndicatorMock = vi.hoisted(() =>
+  vi.fn(async () => ({ messageId: "om_msg", reactionId: "reaction_1" })),
+);
 const removeTypingIndicatorMock = vi.hoisted(() => vi.fn(async () => {}));
+const addDoneIndicatorMock = vi.hoisted(() => vi.fn(async () => {}));
 const streamingInstances = vi.hoisted(() => [] as any[]);
 
 vi.mock("./accounts.js", () => ({ resolveFeishuAccount: resolveFeishuAccountMock }));
@@ -24,6 +27,7 @@ vi.mock("./targets.js", () => ({ resolveReceiveIdType: resolveReceiveIdTypeMock 
 vi.mock("./typing.js", () => ({
   addTypingIndicator: addTypingIndicatorMock,
   removeTypingIndicator: removeTypingIndicatorMock,
+  addDoneIndicator: addDoneIndicatorMock,
 }));
 vi.mock("./streaming-card.js", () => ({
   FeishuStreamingSession: class {
@@ -408,6 +412,32 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
         replyToMessageId: "om_msg",
         replyInThread: true,
       }),
+    );
+  });
+
+  it("adds DONE reaction after typing indicator is removed on idle", async () => {
+    addTypingIndicatorMock.mockResolvedValueOnce({ messageId: "om_parent", reactionId: "r_1" });
+
+    createFeishuReplyDispatcher({
+      cfg: {} as never,
+      agentId: "agent",
+      runtime: {} as never,
+      chatId: "oc_chat",
+      replyToMessageId: "om_parent",
+      messageCreateTimeMs: Date.now() - 30_000,
+    });
+
+    const options = createReplyDispatcherWithTypingMock.mock.calls[0]?.[0];
+    // Trigger typing start to set typingState
+    await options.onReplyStart?.();
+    expect(addTypingIndicatorMock).toHaveBeenCalledTimes(1);
+
+    // Trigger idle which calls typing stop → remove + add DONE
+    await options.onIdle?.();
+    expect(removeTypingIndicatorMock).toHaveBeenCalledTimes(1);
+    expect(addDoneIndicatorMock).toHaveBeenCalledTimes(1);
+    expect(addDoneIndicatorMock).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: "om_parent" }),
     );
   });
 
