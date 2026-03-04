@@ -104,6 +104,15 @@ export function mergeStreamingText(
   return `${previous}${next}`;
 }
 
+/** Multi-stage thinking animation frames */
+const THINKING_STAGES = [
+  "🔍 正在理解问题...",
+  "📚 正在检索知识...",
+  "🧠 正在组织回答...",
+  "✍️ 即将开始输出...",
+];
+const THINKING_STAGE_INTERVAL_MS = 2000;
+
 /** Streaming card session manager */
 export class FeishuStreamingSession {
   private client: Client;
@@ -115,6 +124,8 @@ export class FeishuStreamingSession {
   private lastUpdateTime = 0;
   private pendingText: string | null = null;
   private updateThrottleMs = 100; // Throttle updates to max 10/sec
+  private thinkingTimer: ReturnType<typeof setInterval> | null = null;
+  private thinkingStageIndex = 0;
 
   constructor(client: Client, creds: Credentials, log?: (msg: string) => void) {
     this.client = client;
@@ -145,7 +156,42 @@ export class FeishuStreamingSession {
         streaming_config: { print_frequency_ms: { default: 50 }, print_step: { default: 2 } },
       },
       body: {
-        elements: [{ tag: "markdown", content: "⏳ Thinking...", element_id: "content" }],
+        elements: [
+          { tag: "markdown", content: "⏳ Thinking...", element_id: "content" },
+          { tag: "hr" },
+          {
+            tag: "column_set",
+            horizontal_spacing: "small",
+            columns: [
+              {
+                tag: "column",
+                width: "auto",
+                elements: [
+                  {
+                    tag: "button",
+                    text: { tag: "plain_text", content: "👍Good Job" },
+                    type: "primary",
+                    value: { action: "approve" },
+                    element_id: "btn_approve",
+                  },
+                ],
+              },
+              {
+                tag: "column",
+                width: "auto",
+                elements: [
+                  {
+                    tag: "button",
+                    text: { tag: "plain_text", content: "👎Bad Job" },
+                    type: "danger",
+                    value: { action: "reject" },
+                    element_id: "btn_reject",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
       },
     };
     if (options?.header) {
@@ -219,6 +265,32 @@ export class FeishuStreamingSession {
 
     this.state = { cardId, messageId: sendRes.data.message_id, sequence: 1, currentText: "" };
     this.log?.(`Started streaming: cardId=${cardId}, messageId=${sendRes.data.message_id}`);
+    this.startThinkingAnimation();
+  }
+
+  /** Cycle through thinking stage messages until real content arrives */
+  private startThinkingAnimation(): void {
+    this.thinkingStageIndex = 0;
+    this.thinkingTimer = setInterval(() => {
+      if (!this.state || this.closed) {
+        this.stopThinkingAnimation();
+        return;
+      }
+      this.thinkingStageIndex = (this.thinkingStageIndex + 1) % THINKING_STAGES.length;
+      const frame = THINKING_STAGES[this.thinkingStageIndex];
+      this.queue = this.queue.then(async () => {
+        if (this.thinkingTimer && this.state) {
+          await this.updateCardContent(frame);
+        }
+      });
+    }, THINKING_STAGE_INTERVAL_MS);
+  }
+
+  private stopThinkingAnimation(): void {
+    if (this.thinkingTimer) {
+      clearInterval(this.thinkingTimer);
+      this.thinkingTimer = null;
+    }
   }
 
   private async updateCardContent(text: string, onError?: (error: unknown) => void): Promise<void> {
@@ -254,6 +326,8 @@ export class FeishuStreamingSession {
     if (!this.state || this.closed) {
       return;
     }
+    // Stop thinking animation once real content arrives
+    this.stopThinkingAnimation();
     const mergedInput = mergeStreamingText(this.pendingText ?? this.state.currentText, text);
     if (!mergedInput || mergedInput === this.state.currentText) {
       return;
@@ -286,6 +360,7 @@ export class FeishuStreamingSession {
     if (!this.state || this.closed) {
       return;
     }
+    this.stopThinkingAnimation();
     this.closed = true;
     await this.queue;
 
