@@ -10,7 +10,7 @@ import {
   type FeishuBotAddedEvent,
 } from "./bot.js";
 import { handleFeishuCardAction, type FeishuCardActionEvent } from "./card-action.js";
-import { createEventDispatcher } from "./client.js";
+import { createEventDispatcher, createFeishuClient } from "./client.js";
 import {
   hasRecordedMessage,
   hasRecordedMessagePersistent,
@@ -462,31 +462,46 @@ function registerEventHandlers(
     },
     "card.action.trigger": async (data: unknown) => {
       const event = data as unknown as FeishuCardActionEvent;
-      try {
-        // Fire-and-forget: process message in background
-        handleFeishuCardAction({
-          cfg,
-          event,
-          botOpenId: botOpenIds.get(accountId),
-          runtime,
-          accountId,
-        }).catch((err) => {
-          error(`feishu[${accountId}]: error handling card action: ${String(err)}`);
-        });
-      } catch (err) {
-        error(`feishu[${accountId}]: error handling card action: ${String(err)}`);
-      }
-      // Return updated card without buttons via callback response for instant removal.
-      // Feishu applies this before the bot sends any reply, preventing double-clicks.
+
+      // Immediately remove buttons via im.message.patch (fire-and-forget).
+      // NOTE: We cannot use handler return values for card updates because
+      // the Node SDK WSClient wraps them in { code, data: base64(...) },
+      // which is incompatible with Feishu's card callback response format
+      // and triggers error 200672.
       const openMessageId = event.context?.open_message_id;
-      const cachedContent = openMessageId ? getCachedCardContent(openMessageId) : undefined;
-      if (cachedContent) {
-        return {
-          toast: { type: "success", content: "已收到，正在处理..." },
-          card: buildCardWithoutButtons(cachedContent),
-        };
+      if (openMessageId) {
+        const cachedContent = getCachedCardContent(openMessageId);
+        if (cachedContent) {
+          const account = resolveFeishuAccount({ cfg, accountId });
+          const client = createFeishuClient(account);
+          client.im.message
+            .patch({
+              path: { message_id: openMessageId },
+              data: { content: JSON.stringify(buildCardWithoutButtons(cachedContent)) },
+            })
+            .catch((err) => {
+              error(`feishu[${accountId}]: failed to remove buttons: ${String(err)}`);
+            });
+        }
       }
-      return { toast: { type: "success", content: "已收到，正在处理..." } };
+
+      // Fire-and-forget: process message in background
+      handleFeishuCardAction({
+        cfg,
+        event,
+        botOpenId: botOpenIds.get(accountId),
+        runtime,
+        accountId,
+      }).catch((err) => {
+        error(`feishu[${accountId}]: error handling card action: ${String(err)}`);
+      });
+
+      // Return empty object so WSClient includes `data` field in the response.
+      // Returning undefined makes WSClient send { code: 200 } without `data`,
+      // which Feishu rejects with 200672 for card action callbacks.
+      // Returning {} makes it send { code: 200, data: base64("{}") } — a valid
+      // empty card callback response (no toast, no card update).
+      return {};
     },
   });
 }
