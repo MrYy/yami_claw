@@ -104,14 +104,34 @@ export function mergeStreamingText(
   return `${previous}${next}`;
 }
 
-/** Multi-stage thinking animation frames */
-const THINKING_STAGES = [
-  "🔍 正在理解问题...",
-  "📚 正在检索知识...",
-  "🧠 正在组织回答...",
-  "✍️ 即将开始输出...",
+/** Multi-stage thinking animation frames with progressive progress bar.
+ *  `basePct` is the center value; actual displayed % is basePct ± random jitter. */
+const THINKING_FRAMES: Array<{ text: string; filled: number; basePct: number; jitter: number }> = [
+  { text: "🔍 正在理解问题...", filled: 2, basePct: 12, jitter: 4 },
+  { text: "🔍 正在理解问题...", filled: 6, basePct: 28, jitter: 5 },
+  { text: "🔍 正在理解问题...", filled: 7, basePct: 33, jitter: 3 },
+  { text: "📚 正在检索知识...", filled: 10, basePct: 47, jitter: 5 },
+  { text: "📚 正在检索知识...", filled: 10, basePct: 52, jitter: 4 },
+  { text: "🧠 正在组织回答...", filled: 14, basePct: 65, jitter: 4 },
+  { text: "🧠 正在组织回答...", filled: 14, basePct: 71, jitter: 3 },
+  { text: "✍️ 即将开始输出...", filled: 16, basePct: 78, jitter: 4 },
+  { text: "✍️ 即将开始输出...", filled: 18, basePct: 88, jitter: 3 },
 ];
+
+/** Return basePct with random jitter, clamped so pct never decreases below prevPct */
+function jitteredPct(basePct: number, jitter: number, prevPct: number): number {
+  const raw = basePct + (Math.random() * 2 - 1) * jitter;
+  // Round to 1 decimal, ensure monotonically increasing
+  return Math.max(prevPct + 0.1, Math.round(raw * 10) / 10);
+}
+const PROGRESS_BAR_LENGTH = 20;
+const CONVERGENCE_RATE = 0.1; // Each tick advances 10% of remaining distance
 const THINKING_STAGE_INTERVAL_MS = 2000;
+
+function buildThinkingFrame(text: string, filled: number, pct: number): string {
+  const bar = "🟩".repeat(filled) + "⬜".repeat(PROGRESS_BAR_LENGTH - filled);
+  return `${text}\n${bar} ${pct.toFixed(1)}%`;
+}
 
 /** Streaming card session manager */
 export class FeishuStreamingSession {
@@ -126,6 +146,7 @@ export class FeishuStreamingSession {
   private updateThrottleMs = 100; // Throttle updates to max 10/sec
   private thinkingTimer: ReturnType<typeof setInterval> | null = null;
   private thinkingStageIndex = 0;
+  private currentPct = 0; // Tracks percentage for convergence phase
 
   constructor(client: Client, creds: Credentials, log?: (msg: string) => void) {
     this.client = client;
@@ -157,7 +178,15 @@ export class FeishuStreamingSession {
       },
       body: {
         elements: [
-          { tag: "markdown", content: "⏳ Thinking...", element_id: "content" },
+          {
+            tag: "markdown",
+            content: buildThinkingFrame(
+              THINKING_FRAMES[0].text,
+              THINKING_FRAMES[0].filled,
+              jitteredPct(THINKING_FRAMES[0].basePct, THINKING_FRAMES[0].jitter, 0),
+            ),
+            element_id: "content",
+          },
           { tag: "hr" },
           {
             tag: "column_set",
@@ -268,16 +297,27 @@ export class FeishuStreamingSession {
     this.startThinkingAnimation();
   }
 
-  /** Cycle through thinking stage messages until real content arrives */
+  /** Progressive thinking animation: predefined frames then asymptotic convergence */
   private startThinkingAnimation(): void {
     this.thinkingStageIndex = 0;
+    this.currentPct = 0;
     this.thinkingTimer = setInterval(() => {
       if (!this.state || this.closed) {
         this.stopThinkingAnimation();
         return;
       }
-      this.thinkingStageIndex = (this.thinkingStageIndex + 1) % THINKING_STAGES.length;
-      const frame = THINKING_STAGES[this.thinkingStageIndex];
+      this.thinkingStageIndex += 1;
+      let frame: string;
+      if (this.thinkingStageIndex < THINKING_FRAMES.length) {
+        // Phase 1: predefined frames with random jitter (12%~88%)
+        const f = THINKING_FRAMES[this.thinkingStageIndex];
+        this.currentPct = jitteredPct(f.basePct, f.jitter, this.currentPct);
+        frame = buildThinkingFrame(f.text, f.filled, this.currentPct);
+      } else {
+        // Phase 2: asymptotic convergence — never reaches 100%
+        this.currentPct += (100 - this.currentPct) * CONVERGENCE_RATE;
+        frame = buildThinkingFrame("✍️ 即将开始输出...", 18, this.currentPct);
+      }
       this.queue = this.queue.then(async () => {
         if (this.thinkingTimer && this.state) {
           await this.updateCardContent(frame);
@@ -326,7 +366,15 @@ export class FeishuStreamingSession {
     if (!this.state || this.closed) {
       return;
     }
-    // Stop thinking animation once real content arrives
+    // Flash 100% completion frame, then stop thinking animation
+    if (this.thinkingTimer) {
+      const doneFrame = buildThinkingFrame("✅ 开始输出...", PROGRESS_BAR_LENGTH, 100);
+      this.queue = this.queue.then(async () => {
+        if (this.state && !this.closed) {
+          await this.updateCardContent(doneFrame);
+        }
+      });
+    }
     this.stopThinkingAnimation();
     const mergedInput = mergeStreamingText(this.pendingText ?? this.state.currentText, text);
     if (!mergedInput || mergedInput === this.state.currentText) {
