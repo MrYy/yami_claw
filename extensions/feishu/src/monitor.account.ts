@@ -24,6 +24,7 @@ import { botOpenIds } from "./monitor.state.js";
 import { monitorWebhook, monitorWebSocket } from "./monitor.transport.js";
 import { getFeishuRuntime } from "./runtime.js";
 import { getMessageFeishu } from "./send.js";
+import { buildCardWithoutButtons, getCachedCardContent } from "./streaming-card.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
 const FEISHU_REACTION_VERIFY_TIMEOUT_MS = 1_500;
@@ -460,25 +461,32 @@ function registerEventHandlers(
       // Ignore reaction removals
     },
     "card.action.trigger": async (data: unknown) => {
+      const event = data as unknown as FeishuCardActionEvent;
       try {
-        const event = data as unknown as FeishuCardActionEvent;
-        const promise = handleFeishuCardAction({
+        // Fire-and-forget: process message in background
+        handleFeishuCardAction({
           cfg,
           event,
           botOpenId: botOpenIds.get(accountId),
           runtime,
           accountId,
+        }).catch((err) => {
+          error(`feishu[${accountId}]: error handling card action: ${String(err)}`);
         });
-        if (fireAndForget) {
-          promise.catch((err) => {
-            error(`feishu[${accountId}]: error handling card action: ${String(err)}`);
-          });
-        } else {
-          await promise;
-        }
       } catch (err) {
         error(`feishu[${accountId}]: error handling card action: ${String(err)}`);
       }
+      // Return updated card without buttons via callback response for instant removal.
+      // Feishu applies this before the bot sends any reply, preventing double-clicks.
+      const openMessageId = event.context?.open_message_id;
+      const cachedContent = openMessageId ? getCachedCardContent(openMessageId) : undefined;
+      if (cachedContent) {
+        return {
+          toast: { type: "success", content: "已收到，正在处理..." },
+          card: buildCardWithoutButtons(cachedContent),
+        };
+      }
+      return { toast: { type: "success", content: "已收到，正在处理..." } };
     },
   });
 }

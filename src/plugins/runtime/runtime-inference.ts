@@ -38,18 +38,13 @@ export function createRuntimeInference(): NonNullable<PluginRuntimeCore["inferen
       const log = (msg: string) => console.log(`[quickComplete] ${msg}`);
       log(`using model: ${model.provider}/${model.id}`);
 
-      // Include a system message for API compatibility (Responses API requires "instructions")
+      // Embed system instructions in user message to avoid role compatibility issues
+      // (some models reject "developer" or "system" roles)
+      const fullPrompt = `Instructions: You are a helpful assistant. Reply in the same language as the user.\n\n${prompt}`;
       const message = await complete(
         model,
         {
-          messages: [
-            {
-              role: "system",
-              content: "You are a helpful assistant. Reply in the same language as the user.",
-              timestamp: Date.now(),
-            },
-            { role: "user", content: prompt, timestamp: Date.now() },
-          ],
+          messages: [{ role: "user", content: fullPrompt, timestamp: Date.now() }],
         },
         { apiKey, maxTokens: 512 },
       );

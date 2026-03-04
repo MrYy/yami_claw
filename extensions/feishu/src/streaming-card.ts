@@ -188,6 +188,31 @@ function truncateLabel(text: string, max = MAX_BUTTON_LABEL_LENGTH): string {
   return clean.length <= max ? clean : clean.slice(0, max - 1) + "…";
 }
 
+// In-memory cache: messageId → markdown content (for button removal after click)
+const cardContentCache = new Map<string, string>();
+
+/** Get cached markdown content for a card message (used by card-action to remove buttons) */
+export function getCachedCardContent(messageId: string): string | undefined {
+  return cardContentCache.get(messageId);
+}
+
+/** Build card JSON without any buttons (used after button click to clean up) */
+export function buildCardWithoutButtons(
+  content: string,
+  header?: { title: { tag: string; content: string }; template?: string },
+): Record<string, unknown> {
+  const card: Record<string, unknown> = {
+    schema: "2.0",
+    body: {
+      elements: [{ tag: "markdown", content, element_id: "content" }],
+    },
+  };
+  if (header) {
+    card.header = header;
+  }
+  return card;
+}
+
 /** Build card JSON with dynamic buttons based on suggestions */
 function buildFinalCardJson(
   content: string,
@@ -208,6 +233,7 @@ function buildFinalCardJson(
               type: "primary",
               value: { text: s },
               element_id: `btn_suggest_${i}`,
+              behaviors: [{ type: "callback", value: { text: s } }],
             },
           ],
         }))
@@ -222,6 +248,7 @@ function buildFinalCardJson(
                 type: "primary",
                 value: { action: "approve" },
                 element_id: "btn_approve",
+                behaviors: [{ type: "callback", value: { action: "approve" } }],
               },
             ],
           },
@@ -235,6 +262,7 @@ function buildFinalCardJson(
                 type: "danger",
                 value: { action: "reject" },
                 element_id: "btn_reject",
+                behaviors: [{ type: "callback", value: { action: "reject" } }],
               },
             ],
           },
@@ -636,6 +664,8 @@ ${tailText}`;
         );
       } else {
         this.log?.(`[updateDynamicButtons] patch success: ${suggestions.length} buttons`);
+        // Cache content so card-action can rebuild card without buttons
+        cardContentCache.set(this.state.messageId, this.state.currentText);
       }
     } catch (e) {
       this.log?.(`[updateDynamicButtons] patch error: ${String(e)}`);
