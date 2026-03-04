@@ -209,8 +209,11 @@ export function createFeishuReplyDispatcher(params: CreateFeishuReplyDispatcherP
         return;
       }
 
-      streaming = new FeishuStreamingSession(createFeishuClient(account), creds, (message) =>
-        params.runtime.log?.(`feishu[${account.accountId}] ${message}`),
+      streaming = new FeishuStreamingSession(
+        createFeishuClient(account),
+        creds,
+        (message) => params.runtime.log?.(`feishu[${account.accountId}] ${message}`),
+        core.inference?.quickComplete,
       );
       try {
         await streaming.start(chatId, resolveReceiveIdType(chatId), {

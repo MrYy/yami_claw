@@ -133,6 +133,137 @@ function buildThinkingFrame(text: string, filled: number, pct: number): string {
   return `${text}\n${bar} ${pct.toFixed(1)}%`;
 }
 
+/** Max button label length (truncated with ellipsis) */
+const MAX_BUTTON_LABEL_LENGTH = 25;
+
+/** Patterns that indicate a prose-style suggestion/offer sentence */
+const PROSE_SUGGESTION_PATTERNS = [
+  /我.{0,6}可以.{0,2}(?:继续|帮|给|为|再|补|做|写|画|生成|分析|整理|提供|输出)/,
+  /你可以(?:试试|尝试|考虑|选择)/,
+  /是否需要我/,
+  /如果你(?:愿意|需要|想|要)/,
+  /要不要我/,
+  /需要我(?:帮|给|做|继续)/,
+  /下一步.{0,4}(?:可以|建议|推荐)/,
+  /(?:还能|还可以|也可以).{0,6}(?:帮|给|做|试|看)/,
+];
+
+/** Extract actionable suggestions from the tail of LLM response text.
+ *  Strategy 1: Scan backwards for consecutive bullet/numbered list items.
+ *  Strategy 2: If no list found, scan tail lines for prose-style suggestion patterns. */
+export function extractSuggestions(text: string, max = 3): string[] {
+  const lines = text.split("\n").filter((l) => l.trim());
+
+  // Strategy 1: trailing bullet/numbered list
+  const listItems: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const match = lines[i].match(/^\s*(?:[-•*]|\d+[.、)]\s*)\s*(.+)/);
+    if (match) {
+      listItems.unshift(match[1].trim());
+    } else {
+      break;
+    }
+  }
+  if (listItems.length > 0) {
+    return listItems.slice(0, max);
+  }
+
+  // Strategy 2: prose-style suggestions in the last few lines
+  const proseSuggestions: string[] = [];
+  const tailLines = lines.slice(-5); // Only check last 5 lines
+  for (const line of tailLines) {
+    const trimmed = line.trim();
+    if (PROSE_SUGGESTION_PATTERNS.some((p) => p.test(trimmed))) {
+      // Strip markdown bold/code for cleaner extraction
+      const clean = trimmed.replace(/\*\*/g, "").replace(/`/g, "").trim();
+      proseSuggestions.push(clean);
+    }
+  }
+  return proseSuggestions.slice(0, max);
+}
+
+function truncateLabel(text: string, max = MAX_BUTTON_LABEL_LENGTH): string {
+  // Strip markdown formatting for label display
+  const clean = text.replace(/\*\*/g, "").replace(/`/g, "").replace(/\s+/g, " ").trim();
+  return clean.length <= max ? clean : clean.slice(0, max - 1) + "…";
+}
+
+/** Build card JSON with dynamic buttons based on suggestions */
+function buildFinalCardJson(
+  content: string,
+  suggestions: string[],
+  header?: { title: string; template?: string },
+): Record<string, unknown> {
+  // Build button columns: use flex_mode "flow" so buttons auto-wrap when
+  // the row is too narrow, keeping text fully visible without truncation.
+  const buttonColumns =
+    suggestions.length > 0
+      ? suggestions.map((s, i) => ({
+          tag: "column" as const,
+          width: "auto" as const,
+          elements: [
+            {
+              tag: "button",
+              text: { tag: "plain_text", content: `📌 ${s}` },
+              type: "primary",
+              value: { text: s },
+              element_id: `btn_suggest_${i}`,
+            },
+          ],
+        }))
+      : [
+          {
+            tag: "column" as const,
+            width: "auto" as const,
+            elements: [
+              {
+                tag: "button",
+                text: { tag: "plain_text", content: "👍Good Job" },
+                type: "primary",
+                value: { action: "approve" },
+                element_id: "btn_approve",
+              },
+            ],
+          },
+          {
+            tag: "column" as const,
+            width: "auto" as const,
+            elements: [
+              {
+                tag: "button",
+                text: { tag: "plain_text", content: "👎Bad Job" },
+                type: "danger",
+                value: { action: "reject" },
+                element_id: "btn_reject",
+              },
+            ],
+          },
+        ];
+
+  const card: Record<string, unknown> = {
+    schema: "2.0",
+    body: {
+      elements: [
+        { tag: "markdown", content, element_id: "content" },
+        { tag: "hr" },
+        {
+          tag: "column_set",
+          flex_mode: "flow",
+          horizontal_spacing: "small",
+          columns: buttonColumns,
+        },
+      ],
+    },
+  };
+  if (header) {
+    card.header = {
+      title: { tag: "plain_text", content: header.title },
+      template: header.template ?? "blue",
+    };
+  }
+  return card;
+}
+
 /** Streaming card session manager */
 export class FeishuStreamingSession {
   private client: Client;
@@ -147,11 +278,18 @@ export class FeishuStreamingSession {
   private thinkingTimer: ReturnType<typeof setInterval> | null = null;
   private thinkingStageIndex = 0;
   private currentPct = 0; // Tracks percentage for convergence phase
+  private quickComplete?: (prompt: string) => Promise<string>;
 
-  constructor(client: Client, creds: Credentials, log?: (msg: string) => void) {
+  constructor(
+    client: Client,
+    creds: Credentials,
+    log?: (msg: string) => void,
+    quickComplete?: (prompt: string) => Promise<string>,
+  ) {
     this.client = client;
     this.creds = creds;
     this.log = log;
+    this.quickComplete = quickComplete;
   }
 
   async start(
@@ -186,39 +324,6 @@ export class FeishuStreamingSession {
               jitteredPct(THINKING_FRAMES[0].basePct, THINKING_FRAMES[0].jitter, 0),
             ),
             element_id: "content",
-          },
-          { tag: "hr" },
-          {
-            tag: "column_set",
-            horizontal_spacing: "small",
-            columns: [
-              {
-                tag: "column",
-                width: "auto",
-                elements: [
-                  {
-                    tag: "button",
-                    text: { tag: "plain_text", content: "👍Good Job" },
-                    type: "primary",
-                    value: { action: "approve" },
-                    element_id: "btn_approve",
-                  },
-                ],
-              },
-              {
-                tag: "column",
-                width: "auto",
-                elements: [
-                  {
-                    tag: "button",
-                    text: { tag: "plain_text", content: "👎Bad Job" },
-                    type: "danger",
-                    value: { action: "reject" },
-                    element_id: "btn_reject",
-                  },
-                ],
-              },
-            ],
           },
         ],
       },
@@ -449,6 +554,92 @@ export class FeishuStreamingSession {
       .catch((e) => this.log?.(`Close failed: ${String(e)}`));
 
     this.log?.(`Closed streaming: cardId=${this.state.cardId}`);
+
+    // Update buttons based on extracted suggestions from the response
+    await this.updateDynamicButtons(text);
+  }
+
+  /** Replace card buttons with dynamic suggestions extracted from the response */
+  private async updateDynamicButtons(text: string): Promise<void> {
+    if (!this.state) {
+      this.log?.("[updateDynamicButtons] skipped: no state");
+      return;
+    }
+    this.log?.(
+      `[updateDynamicButtons] start: textLen=${text.length}, hasQuickComplete=${!!this.quickComplete}`,
+    );
+    let suggestions: string[] = [];
+
+    // Priority: LLM-based extraction
+    if (this.quickComplete) {
+      try {
+        const tailText = text.slice(-800);
+        this.log?.(
+          `[updateDynamicButtons] LLM input tail (${tailText.length} chars): ${tailText.slice(0, 120)}...`,
+        );
+        const prompt = `你是一个对话助手。下面是 AI 助手刚给用户的回复。
+请站在用户的角度，生成 1-3 条用户最可能的后续回复。
+要求：
+- 每条是用户会直接发送的自然回复（如"好的，帮我生成一个带 jq 的版本"）
+- 不超过 20 字，语气自然口语化
+- 基于回复中的建议或可选方案来生成
+返回 JSON 数组格式。如果没有明显的后续建议，返回空数组 []。
+只返回 JSON 数组，不要其他文字。
+
+回复内容：
+${tailText}`;
+        const result = await this.quickComplete(prompt);
+        this.log?.(`[updateDynamicButtons] LLM raw result: ${result}`);
+        const jsonMatch = result.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as unknown;
+          this.log?.(`[updateDynamicButtons] LLM parsed: ${JSON.stringify(parsed)}`);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            suggestions = parsed.slice(0, 3).map(String);
+            this.log?.(
+              `[updateDynamicButtons] LLM extracted ${suggestions.length} suggestions: ${JSON.stringify(suggestions)}`,
+            );
+          } else {
+            this.log?.("[updateDynamicButtons] LLM returned empty or non-array");
+          }
+        } else {
+          this.log?.("[updateDynamicButtons] LLM result has no JSON array match");
+        }
+      } catch (e) {
+        this.log?.(`[updateDynamicButtons] LLM failed: ${String(e)}`);
+      }
+    } else {
+      this.log?.("[updateDynamicButtons] quickComplete not available, using regex only");
+    }
+
+    // Fallback: regex-based extraction
+    if (suggestions.length === 0) {
+      suggestions = extractSuggestions(text);
+      this.log?.(
+        `[updateDynamicButtons] regex fallback: ${suggestions.length} suggestions: ${JSON.stringify(suggestions)}`,
+      );
+    }
+
+    this.log?.(
+      `[updateDynamicButtons] final suggestions (${suggestions.length}): ${JSON.stringify(suggestions)}`,
+    );
+
+    const card = buildFinalCardJson(this.state.currentText, suggestions);
+    try {
+      const response = await this.client.im.message.patch({
+        path: { message_id: this.state.messageId },
+        data: { content: JSON.stringify(card) },
+      });
+      if (response.code !== 0) {
+        this.log?.(
+          `[updateDynamicButtons] patch failed: ${response.msg || `code ${response.code}`}`,
+        );
+      } else {
+        this.log?.(`[updateDynamicButtons] patch success: ${suggestions.length} buttons`);
+      }
+    } catch (e) {
+      this.log?.(`[updateDynamicButtons] patch error: ${String(e)}`);
+    }
   }
 
   isActive(): boolean {

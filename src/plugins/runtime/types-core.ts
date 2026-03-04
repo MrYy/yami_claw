@@ -52,4 +52,9 @@ export type PluginRuntimeCore = {
   state: {
     resolveStateDir: typeof import("../../config/paths.js").resolveStateDir;
   };
+  /** Optional lightweight inference capability for one-shot LLM calls */
+  inference?: {
+    /** One-shot text completion using the configured model */
+    quickComplete: (prompt: string) => Promise<string>;
+  };
 };

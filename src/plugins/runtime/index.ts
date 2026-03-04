@@ -5,6 +5,7 @@ import { textToSpeechTelephony } from "../../tts/tts.js";
 import { createRuntimeChannel } from "./runtime-channel.js";
 import { createRuntimeConfig } from "./runtime-config.js";
 import { createRuntimeEvents } from "./runtime-events.js";
+import { createRuntimeInference } from "./runtime-inference.js";
 import { createRuntimeLogging } from "./runtime-logging.js";
 import { createRuntimeMedia } from "./runtime-media.js";
 import { createRuntimeSystem } from "./runtime-system.js";
@@ -41,6 +42,7 @@ export function createPluginRuntime(): PluginRuntime {
     events: createRuntimeEvents(),
     logging: createRuntimeLogging(),
     state: { resolveStateDir },
+    inference: createRuntimeInference(),
   } satisfies PluginRuntime;
 
   return runtime;
