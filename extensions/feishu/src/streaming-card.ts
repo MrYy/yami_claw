@@ -204,7 +204,7 @@ function buildFinalCardJson(
           elements: [
             {
               tag: "button",
-              text: { tag: "plain_text", content: `📌 ${s}` },
+              text: { tag: "plain_text", content: s },
               type: "primary",
               value: { text: s },
               element_id: `btn_suggest_${i}`,

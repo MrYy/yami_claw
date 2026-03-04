@@ -6,7 +6,22 @@ import { getFeishuRuntime } from "./runtime.js";
 // Feishu emoji types for typing indicator
 // See: https://open.feishu.cn/document/server-docs/im-v1/message-reaction/emojis-introduce
 // Full list: https://github.com/go-lark/lark/blob/main/emoji.go
-const TYPING_EMOJI = "OneSecond"; // Typing indicator emoji (shown while processing)
+// Pool of typing indicator emojis — one is picked randomly per request
+const TYPING_EMOJIS = [
+  "OK",
+  "MUSCLE",
+  "PROUD",
+  "WITTY",
+  "THINKING",
+  "MONEY",
+  "OnIt",
+  "Status_PrivateMessage",
+  "GoGoGo",
+] as const;
+
+function pickTypingEmoji(): string {
+  return TYPING_EMOJIS[Math.floor(Math.random() * TYPING_EMOJIS.length)];
+}
 const DONE_EMOJI = "DONE"; // Completion indicator emoji (shown after reply finishes)
 
 /**
@@ -119,7 +134,7 @@ export async function addTypingIndicator(params: {
     const response = await client.im.messageReaction.create({
       path: { message_id: messageId },
       data: {
-        reaction_type: { emoji_type: TYPING_EMOJI },
+        reaction_type: { emoji_type: pickTypingEmoji() },
       },
     });
 
